@@ -1,0 +1,295 @@
+// 1. CONFIGURACIÓN BÁSICA - PRISMA 6
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 2. ENUMS (Valores predefinidos)
+enum RolUsuario {
+  ADMINISTRADOR
+  DIRECTOR
+  DOCENTE
+  TUTOR
+  ESTUDIANTE
+}
+
+enum EstadoAsistencia {
+  PRESENTE
+  AUSENTE
+  ATRASO
+  LICENCIA
+}
+
+// 3. MODELO USUARIO (Autenticación)
+model Usuario {
+  id            String     @id @default(uuid())
+  email         String     @unique
+  password      String // Contraseña hasheada
+  rol           RolUsuario
+  activo        Boolean    @default(true)
+  fechaCreacion DateTime   @default(now())
+
+  // Datos personales
+  nombre    String
+  apellido  String
+  telefono  String?
+  direccion String?
+  fotoUrl   String?
+
+  // Relaciones con perfiles específicos
+  perfilDirector   PerfilDirector?
+  perfilDocente    PerfilDocente?
+  perfilTutor      PerfilTutor?
+  perfilEstudiante PerfilEstudiante?
+
+  // Auditoría
+  accionesRealizadas RegistroAuditoria[]
+
+  // Comunicaciones
+  mensajesEnviados  Comunicacion[] @relation("Emisor")
+  mensajesRecibidos Comunicacion[] @relation("Receptor")
+
+  // Índices para optimización - CORREGIDO: solo campos escalares
+  @@index([email])
+  @@index([activo])
+  @@index([rol])
+}
+
+// --- PERFILES ESPECÍFICOS ---
+
+model PerfilDirector {
+  id        String  @id @default(uuid())
+  usuarioId String  @unique
+  usuario   Usuario @relation(fields: [usuarioId], references: [id])
+}
+
+model PerfilDocente {
+  id        String  @id @default(uuid())
+  usuarioId String  @unique
+  usuario   Usuario @relation(fields: [usuarioId], references: [id])
+
+  // Un profesor tiene muchas asignaturas asignadas
+  asignaciones CursoMateria[]
+
+  // Mensajes enviados a cursos
+  mensajesEnviados MensajeCurso[]
+}
+
+model PerfilTutor {
+  id             String  @id @default(uuid())
+  usuarioId      String  @unique
+  usuario        Usuario @relation(fields: [usuarioId], references: [id])
+  telegramChatId String? // Para integración con Telegram
+
+  // Un tutor tiene muchos estudiantes (hijos)
+  estudiantes PerfilEstudiante[]
+}
+
+model PerfilEstudiante {
+  id              String   @id @default(uuid())
+  usuarioId       String   @unique
+  usuario         Usuario  @relation(fields: [usuarioId], references: [id])
+  fechaNacimiento DateTime
+
+  // Relación con Tutor (Muchos a Muchos)
+  tutores PerfilTutor[]
+
+  // Curso Actual
+  cursoId String?
+  curso   Curso?  @relation(fields: [cursoId], references: [id])
+
+  // Datos Académicos
+  asistencias    Asistencia[]
+  calificaciones Calificacion[]
+}
+
+// --- ESTRUCTURA ACADÉMICA ---
+
+model AnoAcademico {
+  id          String   @id @default(uuid())
+  nombre      String // Ej: "Gestión 2025"
+  fechaInicio DateTime
+  fechaFin    DateTime
+  activo      Boolean  @default(false)
+
+  cursos Curso[]
+
+  @@index([activo])
+}
+
+model Nivel {
+  id     String  @id @default(uuid())
+  nombre String // Ej: "Secundaria", "Primaria"
+  cursos Curso[]
+}
+
+// El "Curso" físico (Ej: 1ro de Secundaria A - 2025)
+model Curso {
+  id             String       @id @default(uuid())
+  nombre         String // Ej: "1ro A"
+  nivelId        String
+  nivel          Nivel        @relation(fields: [nivelId], references: [id])
+  anoAcademicoId String
+  anoAcademico   AnoAcademico @relation(fields: [anoAcademicoId], references: [id])
+
+  estudiantes PerfilEstudiante[]
+
+  // Materias que se dictan en este curso
+  materias CursoMateria[]
+
+  // Eventos del curso (Agenda)
+  eventos Evento[]
+
+  // Mensajes enviados al curso
+  mensajes MensajeCurso[]
+
+  @@index([nivelId, anoAcademicoId])
+}
+
+// Catálogo de Materias (Plantilla)
+model Materia {
+  id     String @id @default(uuid())
+  nombre String // Ej: "Matemáticas", "Física"
+
+  // Relación con los cursos donde se dicta
+  cursos CursoMateria[]
+}
+
+// TABLA PIVOTE CRÍTICA: Asignación de Materia + Profesor + Curso
+model CursoMateria {
+  id String @id @default(uuid())
+
+  cursoId String
+  curso   Curso  @relation(fields: [cursoId], references: [id])
+
+  materiaId String
+  materia   Materia @relation(fields: [materiaId], references: [id])
+
+  docenteId String? // Puede estar vacía si aún no asignan profe
+  docente   PerfilDocente? @relation(fields: [docenteId], references: [id])
+
+  // Un profesor crea ítems de evaluación aquí
+  evaluaciones PlanEvaluacion[]
+  asistencias  Asistencia[]
+
+  @@index([cursoId, materiaId])
+  @@index([docenteId])
+}
+
+// --- MÓDULO DE CALIFICACIONES ---
+
+model PlanEvaluacion {
+  id          String    @id @default(uuid())
+  titulo      String // Ej: "Examen Primer Trimestre"
+  descripcion String?
+  porcentaje  Float // Cuánto vale esta nota (Ej: 30%)
+  fecha       DateTime? // Fecha planificada del examen
+
+  cursoMateriaId String
+  cursoMateria   CursoMateria @relation(fields: [cursoMateriaId], references: [id])
+
+  calificaciones Calificacion[]
+
+  @@index([cursoMateriaId])
+}
+
+model Calificacion {
+  id                String  @id @default(uuid())
+  puntaje           Float // La nota (Ej: 85.5)
+  retroalimentacion String?
+
+  estudianteId String
+  estudiante   PerfilEstudiante @relation(fields: [estudianteId], references: [id])
+
+  planEvaluacionId String
+  planEvaluacion   PlanEvaluacion @relation(fields: [planEvaluacionId], references: [id])
+
+  @@index([estudianteId, planEvaluacionId])
+  @@index([planEvaluacionId])
+}
+
+// --- MÓDULO DE ASISTENCIA ---
+
+model Asistencia {
+  id     String           @id @default(uuid())
+  fecha  DateTime         @default(now())
+  estado EstadoAsistencia
+
+  estudianteId String
+  estudiante   PerfilEstudiante @relation(fields: [estudianteId], references: [id])
+
+  // Opcional: Si la asistencia es por materia específica
+  cursoMateriaId String?
+  cursoMateria   CursoMateria? @relation(fields: [cursoMateriaId], references: [id])
+
+  @@index([estudianteId, fecha])
+  @@index([fecha, estado])
+}
+
+// --- MÓDULO DE COMUNICACIONES Y LOGS ---
+
+model Comunicacion {
+  id         String   @id @default(uuid())
+  titulo     String
+  contenido  String
+  fechaEnvio DateTime @default(now())
+  urgente    Boolean  @default(false) // Para enviar a Telegram
+
+  emisorId String
+  emisor   Usuario @relation("Emisor", fields: [emisorId], references: [id])
+
+  receptorId String? // Puede ser nulo si es un mensaje masivo
+  receptor   Usuario? @relation("Receptor", fields: [receptorId], references: [id])
+
+  // Si es para un curso entero
+  cursoDestinoId String?
+
+  @@index([fechaEnvio, urgente])
+}
+
+// NUEVO MODELO: Mensajes específicos por curso
+model MensajeCurso {
+  id         String   @id @default(uuid())
+  titulo     String
+  contenido  String
+  fechaEnvio DateTime @default(now())
+  tipo       String // "ANUNCIO", "TAREA", "AVISO"
+
+  docenteId String
+  docente   PerfilDocente @relation(fields: [docenteId], references: [id])
+
+  cursoId String
+  curso   Curso  @relation(fields: [cursoId], references: [id])
+
+  @@index([cursoId, fechaEnvio])
+}
+
+model Evento {
+  id          String   @id @default(uuid())
+  titulo      String
+  fecha       DateTime
+  descripcion String?
+
+  cursoId String? // Si es null, es evento de todo el colegio
+  curso   Curso?  @relation(fields: [cursoId], references: [id])
+
+  @@index([fecha])
+}
+
+model RegistroAuditoria {
+  id        String   @id @default(uuid())
+  accion    String // Ej: "ACTUALIZAR_NOTA", "INICIO_SESION"
+  detalles  String?
+  fechaHora DateTime @default(now())
+  ipAddress String? // Nuevo campo para seguridad
+
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id])
+
+  @@index([fechaHora])
+  @@index([usuarioId, fechaHora])
+}
